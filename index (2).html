@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Phnom Penh Traffic Dashboard</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+
+    <style>
+        body { font-family: Arial, sans-serif; margin:0; }
+        h1 { text-align:center; }
+        #map { height:55vh; width:100%; }
+
+        #alertsContainer, #adminContainer, #chartContainer {
+            padding: 15px;
+            background: #f9f9f9;
+            margin-bottom: 10px;
+        }
+
+        ul { list-style:none; padding:0; }
+        li { padding:5px; margin-bottom:10px; }
+
+        /* CHAT */
+        #chatBtn {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: blue;
+            color: white;
+            padding: 12px;
+            border: none;
+            cursor: pointer;
+            border-radius:5px;
+            z-index: 10000;
+        }
+
+        #chatPanel {
+            position: fixed;
+            bottom: 70px;
+            right: 20px;
+            width: 350px;
+            height: 500px;
+            background: white;
+            border: 1px solid gray;
+            display: none;
+            flex-direction: column;
+            padding:5px;
+            box-shadow:0 0 10px rgba(0,0,0,0.2);
+            z-index: 10000;
+        }
+
+        #messages { flex:1; overflow:auto; border:1px solid #ccc; margin-bottom:5px; padding:5px; }
+
+        #inputBox { display: flex; margin-top:5px; }
+        #inputBox input[type="text"] { flex:1; padding:5px; }
+        #inputBox button { width:70px; padding:5px; }
+
+        .approveBtn {
+            background: green;
+            color: white;
+            border: none;
+            margin-left: 5px;
+            cursor: pointer;
+        }
+
+        .rejectBtn {
+            background: red;
+            color: white;
+            border: none;
+            margin-left: 5px;
+            cursor: pointer;
+        }
+
+        img.preview { width: 120px; display:block; margin-top:5px; border:1px solid #ccc; }
+
+        /* ADMIN BUTTON */
+        #adminBtn {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            padding: 10px 15px;
+            background: darkblue;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            z-index: 99999;
+        }
+    </style>
+</head>
+<body>
+
+<h1>Phnom Penh Traffic Dashboard</h1>
+
+<!-- Admin Button -->
+<button id="adminBtn">Admin</button>
+
+<div id="map"></div>
+
+<div id="alertsContainer">
+    <h2>Traffic Incident Alerts</h2>
+    <ul id="alertsList"></ul>
+</div>
+
+<div id="adminContainer" style="display:none;">
+    <h2>Pending Reports (Admin Verification)</h2>
+    <p><b>Instructions:</b> Upload image → Type message → Send (Your current location will be used)</p>
+    <ul id="pendingReports"></ul>
+</div>
+
+<div id="chartContainer">
+    <h2>Annual Traffic Deaths</h2>
+    <canvas id="deathChart" height="150"></canvas>
+</div>
+
+<button id="chatBtn">Report</button>
+
+<div id="chatPanel">
+    <div id="messages"></div>
+    <input type="file" id="imageInput" accept="image/*">
+    <div id="inputBox">
+        <input type="text" id="msgInput" placeholder="Type incident...">
+        <button id="send">Send</button>
+    </div>
+</div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<script>
+/* =========================
+   VARIABLES
+========================= */
+let isAdmin = false;
+
+/* =========================
+   ADMIN LOGIN BUTTON
+========================= */
+const adminBtn = document.getElementById("adminBtn");
+const adminContainer = document.getElementById("adminContainer");
+
+adminBtn.onclick = function() {
+    if (isAdmin) {
+        // Logout
+        isAdmin = false;
+        adminContainer.style.display = "none";
+        adminBtn.textContent = "Admin";
+        alert("Logged out.");
+    } else {
+        const password = prompt("Enter admin password:");
+        if (password === "traffic123") {
+            isAdmin = true;
+            adminContainer.style.display = "block";
+            adminBtn.textContent = "Logout Admin";
+            displayPendingReports();
+            alert("Welcome, Admin!");
+        } else {
+            alert("Incorrect password.");
+        }
+    }
+};
+
+/* =========================
+   MAP SETUP WITH USER LOCATION CENTER
+========================= */
+const map = L.map("map");
+
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: "© OpenStreetMap contributors"
+}).addTo(map);
+
+map.locate({ setView: true, maxZoom: 14 });
+
+map.on('locationerror', function() {
+    map.setView([11.56, 104.92], 12);
+});
+
+/* =========================
+   CHAT PANEL
+========================= */
+const chatBtn = document.getElementById("chatBtn");
+const chatPanel = document.getElementById("chatPanel");
+const msgInput = document.getElementById("msgInput");
+const send = document.getElementById("send");
+const imageInput = document.getElementById("imageInput");
+const messagesDiv = document.getElementById("messages");
+
+chatBtn.onclick = function() {
+    chatPanel.style.display = chatPanel.style.display === "flex" ? "none" : "flex";
+};
+
+send.onclick = function() {
+    const text = msgInput.value.trim();
+
+    if (!text) {
+        alert("Please type a message describing the incident.");
+        return;
+    }
+
+    const file = imageInput.files[0];
+    if (!file) {
+        alert("Please upload image proof.");
+        return;
+    }
+
+    // Get user's current location when sending
+    if (!navigator.geolocation) {
+        alert("Geolocation is not supported by your browser.");
+        return;
+    }
+
+    navigator.geolocation.getCurrentPosition(function(position) {
+        const lat = position.coords.latitude;
+        const lng = position.coords.longitude;
+
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            const report = {
+                message: text,
+                lat: lat,
+                lng: lng,
+                image: e.target.result,
+                time: new Date().toLocaleString()
+            };
+
+            let pending = JSON.parse(localStorage.getItem("pendingReports") || "[]");
+            pending.push(report);
+            localStorage.setItem("pendingReports", JSON.stringify(pending));
+            if (isAdmin) displayPendingReports();
+
+            // Add clickable message to chat
+            const messageDiv = document.createElement("div");
+            messageDiv.style.cursor = "pointer";
+            messageDiv.style.padding = "5px";
+            messageDiv.style.borderBottom = "1px solid #ddd";
+            messageDiv.textContent = text;
+
+            messageDiv.onclick = function() {
+                map.setView([lat, lng], 16);
+                L.popup()
+                    .setLatLng([lat, lng])
+                    .setContent("Reported Incident: " + text)
+                    .openOn(map);
+            };
+
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+            // Reset input
+            msgInput.value = "";
+            imageInput.value = "";
+
+            alert("Report submitted for verification.");
+        };
+        reader.readAsDataURL(file);
+    }, function() {
+        alert("Unable to retrieve your location. Please allow location access and try again.");
+    });
+};
+
+/* =========================
+   ADMIN PENDING REPORTS
+========================= */
+function displayPendingReports() {
+    if (!isAdmin) return;
+    const list = document.getElementById("pendingReports");
+    list.innerHTML = "";
+
+    let pending = JSON.parse(localStorage.getItem("pendingReports") || "[]");
+
+    pending.forEach((report, index) => {
+        const li = document.createElement("li");
+        li.innerHTML = `<b>${report.message}</b><br>${report.time}<br>
+                        <img src="${report.image}" class="preview">`;
+
+        const approve = document.createElement("button");
+        approve.textContent = "Approve";
+        approve.className = "approveBtn";
+        approve.onclick = function() {
+            // Add marker to map on approval
+            L.marker([report.lat, report.lng])
+                .addTo(map)
+                .bindPopup(`<b>${report.message}</b><br><img src="${report.image}" width="150">`);
+
+            pending.splice(index, 1);
+            localStorage.setItem("pendingReports", JSON.stringify(pending));
+            displayPendingReports();
+        };
+
+        const reject = document.createElement("button");
+        reject.textContent = "Reject";
+        reject.className = "rejectBtn";
+        reject.onclick = function() {
+            pending.splice(index, 1);
+            localStorage.setItem("pendingReports", JSON.stringify(pending));
+            displayPendingReports();
+        };
+
+        li.appendChild(approve);
+        li.appendChild(reject);
+        list.appendChild(li);
+    });
+}
+
+/* =========================
+   RANDOM ALERTS (SIMULATION)
+========================= */
+const minLat = 11.45, maxLat = 11.65;
+const minLng = 104.80, maxLng = 105.05;
+const incidentMessages = ["Accident reported","Road construction","Heavy traffic","Flooded road","Vehicle breakdown"];
+
+function randomPoint() {
+    return { lat: minLat + Math.random()*(maxLat-minLat), lng: minLng + Math.random()*(maxLng-minLng) };
+}
+
+function randomIncident() {
+    const p = randomPoint();
+    return { message: incidentMessages[Math.floor(Math.random()*incidentMessages.length)], lat:p.lat, lng:p.lng };
+}
+
+function updateAlerts() {
+    const list = document.getElementById("alertsList");
+    list.innerHTML = "";
+    for (let i=0; i<3; i++){
+        const inc = randomIncident();
+        const li = document.createElement("li");
+        li.textContent = inc.message;
+        li.onclick = () => {
+            map.setView([inc.lat, inc.lng], 15);
+            L.popup().setLatLng([inc.lat, inc.lng]).setContent(inc.message).openOn(map);
+        };
+        list.appendChild(li);
+    }
+}
+
+updateAlerts();
+setInterval(updateAlerts, 15000);
+
+/* =========================
+   CHART
+========================= */
+new Chart(document.getElementById("deathChart"), {
+    type: "bar",
+    data: {
+        labels: [2018,2019,2020,2021,2022,2023],
+        datasets: [{ data:[320,340,310,350,330,300], backgroundColor:"red" }]
+    },
+    options: { plugins:{legend:{display:false}}, scales:{y:{beginAtZero:true}} }
+});
+
+</script>
+
+</body>
+</html>
